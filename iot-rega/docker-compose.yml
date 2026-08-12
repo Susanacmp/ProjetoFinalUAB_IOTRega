@@ -1,0 +1,81 @@
+# docker-compose.yml
+# Ambiente de desenvolvimento completo para IoT Rega
+# Uso: docker-compose up -d
+
+version: '3.8'
+
+services:
+
+  # PostgreSQL + PostGIS + TimescaleDB
+  db:
+    image: timescale/timescaledb-ha:pg16-latest
+    container_name: iotrega-db
+    environment:
+      POSTGRES_DB:       iotrega
+      POSTGRES_USER:     postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./backend/db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # MQTT Broker (Mosquitto)
+  mqtt:
+    image: eclipse-mosquitto:2
+    container_name: iotrega-mqtt
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf
+    restart: unless-stopped
+
+  # Backend Node.js
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: iotrega-backend
+    depends_on:
+      db:
+        condition: service_healthy
+      mqtt:
+        condition: service_started
+    environment:
+      DB_HOST:           db
+      DB_PORT:           5432
+      DB_NAME:           iotrega
+      DB_USER:           postgres
+      DB_PASSWORD:       postgres
+      MQTT_BROKER:       mqtt://mqtt:1883
+      SIMULATE_SENSORS:  "true"
+      JWT_SECRET:        "dev_secret_change_in_production"
+      NODE_ENV:          development
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    command: npm run dev
+    restart: unless-stopped
+
+  # Frontend React (build estático servido por Nginx, com proxy para /api)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: iotrega-frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  db_data:
