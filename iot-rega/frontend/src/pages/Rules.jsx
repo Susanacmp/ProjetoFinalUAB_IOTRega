@@ -11,7 +11,9 @@ export default function Rules() {
   const [error, setError] = useState('');
 
   const load = () => api.get('/rules').then((res) => setRules(res.data));
-  useEffect(load, []);
+  useEffect(() => {
+    load();
+}, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();

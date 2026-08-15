@@ -119,9 +119,113 @@ router.put('/:id', param('id').isInt(), asyncHandler(async (req, res) => {
 }));
 
 // DELETE /api/plots/:id
-router.delete('/:id', param('id').isInt(), asyncHandler(async (req, res) => {
-  await query('DELETE FROM plot WHERE id = $1', [req.params.id]);
-  res.json({ message: 'Talhão eliminado' });
+router.delete(
+  '/:id',
+  param('id').isInt(),
+  asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    const result = await query(
+      `
+      DELETE FROM plot p
+      USING farm f
+      JOIN user_farm uf
+        ON uf.farm_id = f.id
+      WHERE p.id = $1
+        AND p.farm_id = f.id
+        AND uf.user_id = $2
+      RETURNING p.id
+      `,
+      [id, req.user.id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        error: 'Talhão não encontrado ou sem acesso à exploração.'
+      });
+    }
+
+    res.json({
+      message: 'Talhão eliminado'
+      
+    });
+  })
+);
+
+// PUT /api/plots/:id
+// Atualiza os dados de um talhão, sem alterar a geometria
+router.put('/:id', asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { name, crop_type, area } = req.body;
+
+  if (!name || !name.trim()) {
+    return res.status(400).json({
+      error: 'O nome do talhão é obrigatório.'
+    });
+  }
+
+  const validCropTypes = [
+    'vinha',
+    'olival',
+    'pomar',
+    'hortícolas',
+    'outro'
+  ];
+
+  if (crop_type && !validCropTypes.includes(crop_type)) {
+    return res.status(400).json({
+      error: 'Tipo de cultura inválido.'
+    });
+  }
+
+  let parsedArea = null;
+
+  if (area !== undefined && area !== null && area !== '') {
+    parsedArea = Number(area);
+
+    if (Number.isNaN(parsedArea) || parsedArea < 0) {
+      return res.status(400).json({
+        error: 'A área deve ser um número positivo.'
+      });
+    }
+  }
+
+  const result = await query(
+    `
+    UPDATE plot p
+    SET
+      name = $1,
+      crop_type = $2,
+      area = $3
+    FROM farm f
+    JOIN user_farm uf ON uf.farm_id = f.id
+    WHERE
+      p.id = $4
+      AND p.farm_id = f.id
+      AND uf.user_id = $5
+    RETURNING
+      p.id,
+      p.farm_id,
+      p.name,
+      p.crop_type,
+      p.area
+    `,
+    [
+      name.trim(),
+      crop_type || 'vinha',
+      parsedArea,
+      id,
+      req.user.id
+    ]
+  );
+
+  if (result.rows.length === 0) {
+    return res.status(404).json({
+      error: 'Talhão não encontrado.'
+    });
+  }
+
+  res.json(result.rows[0]);
 }));
 
 module.exports = router;

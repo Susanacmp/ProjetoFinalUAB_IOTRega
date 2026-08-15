@@ -92,7 +92,7 @@ router.get('/chart', asyncHandler(async (req, res) => {
 
   const result = await query(
     `SELECT
-       time_bucket($1::interval, time) AS bucket,
+       date_bin($1::interval, time, TIMESTAMPTZ '2000-01-01 00:00:00+00') AS bucket,
        AVG(value)::numeric(10,2)       AS avg,
        MIN(value)::numeric(10,2)       AS min,
        MAX(value)::numeric(10,2)       AS max

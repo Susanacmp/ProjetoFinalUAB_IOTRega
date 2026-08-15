@@ -4,7 +4,7 @@
 -- ============================================================
 
 CREATE EXTENSION IF NOT EXISTS postgis;
-CREATE EXTENSION IF NOT EXISTS timescaledb;
+--CREATE EXTENSION IF NOT EXISTS timescaledb;
 
 -- ------------------------------------------------------------
 -- USERS
@@ -96,7 +96,9 @@ CREATE TABLE IF NOT EXISTS sensor_reading (
   quality    SMALLINT DEFAULT 1
 );
 
-SELECT create_hypertable('sensor_reading','time', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_reading_sensor_time
+ON sensor_reading(sensor_id, time DESC);
+--SELECT create_hypertable('sensor_reading','time', if_not_exists => TRUE);
 
 CREATE INDEX IF NOT EXISTS idx_reading_sensor_time ON sensor_reading(sensor_id, time DESC);
 

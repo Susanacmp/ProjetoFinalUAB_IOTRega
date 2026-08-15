@@ -12,7 +12,9 @@ const router = express.Router();
 router.get('/', asyncHandler(async (req, res) => {
   const result = await query(
     `SELECT f.*, ST_AsGeoJSON(f.location) AS location_geojson,
-            COUNT(DISTINCT p.id) AS plot_count
+            COUNT(DISTINCT p.id) AS plot_count, 
+            ST_Y(f.location::geometry) AS latitude,
+            ST_X(f.location::geometry) AS longitude
      FROM farm f
      JOIN user_farm uf ON uf.farm_id = f.id
      LEFT JOIN plot p ON p.farm_id = f.id
@@ -85,30 +87,76 @@ router.post('/',
 );
 
 // PUT /api/farms/:id — actualizar exploração
-router.put('/:id',
-  param('id').isInt(),
-  body('name').optional().notEmpty().trim(),
-  asyncHandler(async (req, res) => {
-    const { name, description, latitude, longitude } = req.body;
+router.put('/:id', asyncHandler(async (req, res) => {
+  const { id } = req.params;
 
-    const result = await query(
-      `UPDATE farm SET
-         name        = COALESCE($1, name),
-         description = COALESCE($2, description),
-         location    = CASE WHEN $3 IS NOT NULL
-                       THEN ST_SetSRID(ST_MakePoint($3, $4), 4326)::geography
-                       ELSE location END
-       WHERE id = $5
-         AND id IN (SELECT farm_id FROM user_farm WHERE user_id = $6 AND role IN ('owner','admin'))
-       RETURNING *`,
-      [name || null, description || null, longitude || null, latitude || null,
-       req.params.id, req.user.id]
-    );
+  const {
+    name,
+    description,
+    latitude,
+    longitude,
+  } = req.body;
 
-    if (!result.rows.length) return res.status(404).json({ error: 'Não encontrado ou sem permissão' });
-    res.json(result.rows[0]);
-  })
-);
+  if (!name || latitude === undefined || longitude === undefined) {
+    return res.status(400).json({
+      error: 'Nome, latitude e longitude são obrigatórios.',
+    });
+  }
+
+  const lat = parseFloat(latitude);
+  const lng = parseFloat(longitude);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return res.status(400).json({
+      error: 'Latitude e longitude devem ser números válidos.',
+    });
+  }
+
+  const result = await query(
+    `
+    UPDATE farm f
+    SET
+      name = $1,
+      description = $2,
+      location = ST_SetSRID(
+        ST_MakePoint(
+          $4::double precision,
+          $3::double precision
+        ),
+        4326
+      )::geography
+    WHERE f.id = $5
+      AND EXISTS (
+        SELECT 1
+        FROM user_farm uf
+        WHERE uf.farm_id = f.id
+          AND uf.user_id = $6
+      )
+    RETURNING
+      f.id,
+      f.name,
+      f.description,
+      ST_Y(f.location::geometry) AS latitude,
+      ST_X(f.location::geometry) AS longitude
+    `,
+    [
+      name,
+      description || null,
+      lat,
+      lng,
+      id,
+      req.user.id,
+    ]
+  );
+
+  if (result.rows.length === 0) {
+    return res.status(404).json({
+      error: 'Exploração não encontrada.',
+    });
+  }
+
+  res.json(result.rows[0]);
+}));
 
 // DELETE /api/farms/:id
 router.delete('/:id',

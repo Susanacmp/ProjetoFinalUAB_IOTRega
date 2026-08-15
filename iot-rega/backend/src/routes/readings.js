@@ -16,7 +16,7 @@ router.get('/', asyncHandler(async (req, res) => {
   // Se interval definido, usa time_bucket do TimescaleDB para agregar
   if (interval) {
     const result = await query(
-      `SELECT time_bucket($1::interval, time) AS bucket,
+      `SELECT date_bin($1::interval, time, TIMESTAMPTZ '2000-01-01 00:00:00+00') AS bucket,
               AVG(value) AS avg_value,
               MIN(value) AS min_value,
               MAX(value) AS max_value,

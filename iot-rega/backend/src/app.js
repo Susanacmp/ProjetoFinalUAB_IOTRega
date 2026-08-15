@@ -20,7 +20,7 @@ const costRoutes     = require('./routes/costs');
 const dashRoutes     = require('./routes/dashboard');
 
 // Serviços
-const mqttService      = require('./services/mqttService');
+//const mqttService      = require('./services/mqttService');
 const weatherService   = require('./services/weatherService');
 const alertService     = require('./services/alertService');
 
@@ -87,7 +87,7 @@ app.listen(PORT, async () => {
   console.log(`📡 Ambiente: ${process.env.NODE_ENV || 'development'}\n`);
 
   // Iniciar serviço MQTT
-  mqttService.connect();
+  //mqttService.connect();
 
   // Cron: buscar dados climáticos a cada hora
   cron.schedule('0 * * * *', async () => {
