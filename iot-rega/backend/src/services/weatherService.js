@@ -103,12 +103,21 @@ const fetchAllPlots = async () => {
 // ============================================================
 const getForecast = async (plot_id) => {
   const result = await query(
-    `SELECT * FROM weather_forecast
-     WHERE plot_id = $1 AND forecast_time >= CURRENT_DATE
-     ORDER BY forecast_time ASC
+    `SELECT DISTINCT ON (forecast_time::date)
+            id,
+            plot_id,
+            forecast_time,
+            temperature,
+            rainfall,
+            probability_rain
+     FROM weather_forecast
+     WHERE plot_id = $1
+       AND forecast_time >= CURRENT_DATE
+     ORDER BY forecast_time::date ASC, forecast_time DESC
      LIMIT 7`,
     [plot_id]
   );
+
   return result.rows;
 };
 
