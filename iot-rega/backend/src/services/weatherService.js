@@ -80,17 +80,17 @@ const fetchForPlot = async (plot_id, latitude, longitude) => {
 // ============================================================
 const fetchAllPlots = async () => {
   try {
-    // Usa a posição definida no talhão; se não existir, cai no centróide do polígono.
     const result = await query(
       `SELECT p.id,
-              ST_Y(COALESCE(p.position::geometry, ST_Centroid(p.geometry))) AS latitude,
-              ST_X(COALESCE(p.position::geometry, ST_Centroid(p.geometry))) AS longitude
+              ST_Y(ST_Centroid(p.geometry)) AS latitude,
+              ST_X(ST_Centroid(p.geometry)) AS longitude
        FROM plot p
-       WHERE p.position IS NOT NULL OR p.geometry IS NOT NULL`
+       WHERE p.geometry IS NOT NULL`
     );
 
     for (const plot of result.rows) {
       await fetchForPlot(plot.id, plot.latitude, plot.longitude);
+
       // Pequena pausa para não sobrecarregar a API
       await new Promise(r => setTimeout(r, 500));
     }
