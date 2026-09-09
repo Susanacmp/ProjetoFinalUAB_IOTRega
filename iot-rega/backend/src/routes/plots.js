@@ -8,6 +8,8 @@ const { asyncHandler } = require('../middleware/errorHandler');
 
 const router = express.Router();
 
+const VALID_CROP_TYPES = ['vinha', 'olival', 'pomar', 'hortícolas', 'outro'];
+
 // GET /api/plots?farm_id=X
 router.get('/', asyncHandler(async (req, res) => {
   const { farm_id } = req.query;
@@ -15,6 +17,7 @@ router.get('/', asyncHandler(async (req, res) => {
   let sql = `
     SELECT p.*,
            ST_AsGeoJSON(p.geometry)::json AS geojson,
+           ST_AsGeoJSON(p.position)::json AS position,
            COUNT(DISTINCT s.id) AS sensor_count
     FROM plot p
     JOIN farm f ON f.id = p.farm_id
@@ -85,36 +88,81 @@ router.post('/',
   body('name').notEmpty().trim(),
   body('geojson').notEmpty(), // GeoJSON polygon do Leaflet
   asyncHandler(async (req, res) => {
-    const { farm_id, name, area, crop_type, geojson } = req.body;
+    const { farm_id, name, area, crop_type, geojson, position } = req.body;
 
+    // Sem posição explícita, usa-se o centróide do polígono do talhão.
     const result = await query(
-      `INSERT INTO plot (farm_id, name, area, crop_type, geometry)
-       VALUES ($1, $2, $3, $4, ST_SetSRID(ST_GeomFromGeoJSON($5), 4326))
-       RETURNING id, farm_id, name, area, crop_type, created_at`,
-      [farm_id, name, area || null, crop_type || 'vinha', JSON.stringify(geojson)]
+      `INSERT INTO plot (farm_id, name, area, crop_type, geometry, position)
+       VALUES ($1, $2, $3, $4,
+               ST_SetSRID(ST_GeomFromGeoJSON($5), 4326),
+               COALESCE(
+                 ST_SetSRID(ST_GeomFromGeoJSON($6), 4326)::geography,
+                 ST_SetSRID(ST_Centroid(ST_GeomFromGeoJSON($5)), 4326)::geography
+               ))
+       RETURNING id, farm_id, name, area, crop_type, created_at,
+                 ST_AsGeoJSON(position)::json AS position`,
+      [farm_id, name, area || null, crop_type || 'vinha',
+       JSON.stringify(geojson), position ? JSON.stringify(position) : null]
     );
     res.status(201).json(result.rows[0]);
   })
 );
 
 // PUT /api/plots/:id
+// Actualiza um talhão. A geometria e a posição só são alteradas se vierem
+// no corpo do pedido; caso contrário mantêm-se os valores existentes.
 router.put('/:id', param('id').isInt(), asyncHandler(async (req, res) => {
-  const { name, area, crop_type, geojson } = req.body;
+  const { name, area, crop_type, geojson, position } = req.body;
+
+  if (name !== undefined && !String(name).trim()) {
+    return res.status(400).json({ error: 'O nome do talhão é obrigatório.' });
+  }
+
+  if (crop_type && !VALID_CROP_TYPES.includes(crop_type)) {
+    return res.status(400).json({ error: 'Tipo de cultura inválido.' });
+  }
+
+  let parsedArea = null;
+  if (area !== undefined && area !== null && area !== '') {
+    parsedArea = Number(area);
+    if (Number.isNaN(parsedArea) || parsedArea < 0) {
+      return res.status(400).json({ error: 'A área deve ser um número positivo.' });
+    }
+  }
 
   const result = await query(
-    `UPDATE plot SET
-       name      = COALESCE($1, name),
-       area      = COALESCE($2, area),
-       crop_type = COALESCE($3, crop_type),
+    `UPDATE plot p SET
+       name      = COALESCE($1, p.name),
+       area      = COALESCE($2, p.area),
+       crop_type = COALESCE($3, p.crop_type),
        geometry  = CASE WHEN $4::text IS NOT NULL
                    THEN ST_SetSRID(ST_GeomFromGeoJSON($4), 4326)
-                   ELSE geometry END
-     WHERE id = $5
-     RETURNING *`,
-    [name || null, area || null, crop_type || null,
-     geojson ? JSON.stringify(geojson) : null, req.params.id]
+                   ELSE p.geometry END,
+       position  = CASE WHEN $5::text IS NOT NULL
+                   THEN ST_SetSRID(ST_GeomFromGeoJSON($5), 4326)::geography
+                   ELSE p.position END
+     FROM farm f
+     JOIN user_farm uf ON uf.farm_id = f.id
+     WHERE p.id = $6
+       AND p.farm_id = f.id
+       AND uf.user_id = $7
+     RETURNING p.id, p.farm_id, p.name, p.area, p.crop_type,
+               ST_AsGeoJSON(p.geometry)::json AS geojson,
+               ST_AsGeoJSON(p.position)::json AS position`,
+    [
+      name !== undefined ? String(name).trim() : null,
+      parsedArea,
+      crop_type || null,
+      geojson ? JSON.stringify(geojson) : null,
+      position ? JSON.stringify(position) : null,
+      req.params.id,
+      req.user.id,
+    ]
   );
-  if (!result.rows.length) return res.status(404).json({ error: 'Talhão não encontrado' });
+
+  if (!result.rows.length) {
+    return res.status(404).json({ error: 'Talhão não encontrado ou sem acesso à exploração.' });
+  }
   res.json(result.rows[0]);
 }));
 
@@ -151,81 +199,5 @@ router.delete(
     });
   })
 );
-
-// PUT /api/plots/:id
-// Atualiza os dados de um talhão, sem alterar a geometria
-router.put('/:id', asyncHandler(async (req, res) => {
-  const { id } = req.params;
-  const { name, crop_type, area } = req.body;
-
-  if (!name || !name.trim()) {
-    return res.status(400).json({
-      error: 'O nome do talhão é obrigatório.'
-    });
-  }
-
-  const validCropTypes = [
-    'vinha',
-    'olival',
-    'pomar',
-    'hortícolas',
-    'outro'
-  ];
-
-  if (crop_type && !validCropTypes.includes(crop_type)) {
-    return res.status(400).json({
-      error: 'Tipo de cultura inválido.'
-    });
-  }
-
-  let parsedArea = null;
-
-  if (area !== undefined && area !== null && area !== '') {
-    parsedArea = Number(area);
-
-    if (Number.isNaN(parsedArea) || parsedArea < 0) {
-      return res.status(400).json({
-        error: 'A área deve ser um número positivo.'
-      });
-    }
-  }
-
-  const result = await query(
-    `
-    UPDATE plot p
-    SET
-      name = $1,
-      crop_type = $2,
-      area = $3
-    FROM farm f
-    JOIN user_farm uf ON uf.farm_id = f.id
-    WHERE
-      p.id = $4
-      AND p.farm_id = f.id
-      AND uf.user_id = $5
-    RETURNING
-      p.id,
-      p.farm_id,
-      p.name,
-      p.crop_type,
-      p.area
-    `,
-    [
-      name.trim(),
-      crop_type || 'vinha',
-      parsedArea,
-      id,
-      req.user.id
-    ]
-  );
-
-  if (result.rows.length === 0) {
-    return res.status(404).json({
-      error: 'Talhão não encontrado.'
-    });
-  }
-
-  res.json(result.rows[0]);
-}));
 
 module.exports = router;

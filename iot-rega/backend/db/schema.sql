@@ -19,6 +19,20 @@ CREATE TABLE IF NOT EXISTS app_user (
 );
 
 -- ------------------------------------------------------------
+-- PASSWORD RESET (tokens de recuperação de password)
+-- Guarda apenas o hash SHA-256 do token, nunca o token em claro.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS password_reset (
+  id         SERIAL PRIMARY KEY,
+  user_id    INT NOT NULL REFERENCES app_user(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_password_reset_hash ON password_reset(token_hash);
+
+-- ------------------------------------------------------------
 -- FARMS (Explorações)
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS farm (
@@ -48,12 +62,22 @@ CREATE TABLE IF NOT EXISTS plot (
   name        VARCHAR(100) NOT NULL,
   area        FLOAT,
   geometry    GEOMETRY(POLYGON, 4326),
+  position    GEOGRAPHY(Point, 4326),
   crop_type   VARCHAR(50) DEFAULT 'vinha',
   created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Migração para bases de dados criadas antes de existir a coluna position
+ALTER TABLE plot ADD COLUMN IF NOT EXISTS position GEOGRAPHY(Point, 4326);
+
 CREATE INDEX IF NOT EXISTS idx_plot_farm ON plot(farm_id);
 CREATE INDEX IF NOT EXISTS idx_plot_geom ON plot USING GIST (geometry);
+CREATE INDEX IF NOT EXISTS idx_plot_position ON plot USING GIST (position);
+
+-- Preenche a posição a partir do centróide do polígono quando não definida
+UPDATE plot
+SET position = ST_SetSRID(ST_Centroid(geometry), 4326)::geography
+WHERE position IS NULL AND geometry IS NOT NULL;
 
 -- ------------------------------------------------------------
 -- IRRIGATION SYSTEMS
@@ -222,3 +246,94 @@ VALUES
   ('Humidade do solo baixa', 'soil_moisture', 20, '<', 'warning'),
   ('Temperatura crítica',    'temperature',   35, '>', 'critical')
 ON CONFLICT DO NOTHING;
+
+-- ------------------------------------------------------------
+-- LEITURAS ESTÁTICAS DE DEMONSTRAÇÃO
+--
+-- O MVP usa dados estáticos em vez de sensores físicos ou MQTT. Este bloco
+-- gera 7 dias de leituras (de 30 em 30 minutos) para os três sensores de
+-- demonstração, a partir de funções determinísticas — os mesmos dados são
+-- reproduzidos em qualquer instalação, o que é essencial para a demonstração
+-- e para as evidências do relatório.
+--
+-- Os perfis reproduzem comportamentos realistas:
+--   temperature   : ciclo diurno entre ~8 e ~36 °C (ultrapassa o limiar
+--                   crítico de 35 °C nas horas de maior calor)
+--   humidity      : inverso da temperatura, entre ~40 e ~90 %
+--   soil_moisture : secagem progressiva com ciclos de rega, descendo
+--                   abaixo do limiar de aviso de 20 %
+-- ------------------------------------------------------------
+INSERT INTO sensor_reading (time, sensor_id, value, quality)
+SELECT
+  t,
+  s.id,
+  CASE s.type
+    WHEN 'temperature' THEN
+      ROUND((22 + 12 * SIN(2 * PI() * (EXTRACT(EPOCH FROM t) / 3600 - 9) / 24)
+                + 2 * SIN(EXTRACT(EPOCH FROM t) / 86400.0))::numeric, 1)
+    WHEN 'humidity' THEN
+      ROUND((65 - 20 * SIN(2 * PI() * (EXTRACT(EPOCH FROM t) / 3600 - 9) / 24)
+                + 5 * COS(EXTRACT(EPOCH FROM t) / 43200.0))::numeric, 1)
+    WHEN 'soil_moisture' THEN
+      ROUND((32 - 14 * COS(2 * PI() * EXTRACT(EPOCH FROM t) / (86400 * 3.5)))::numeric, 1)
+  END,
+  1
+FROM sensor s
+CROSS JOIN generate_series(
+  date_trunc('hour', NOW()) - INTERVAL '7 days',
+  date_trunc('hour', NOW()),
+  INTERVAL '30 minutes'
+) AS t
+WHERE s.device_id IN ('sim-temp-01', 'sim-hum-01', 'sim-soil-01')
+  AND NOT EXISTS (SELECT 1 FROM sensor_reading r WHERE r.sensor_id = s.id);
+
+-- ------------------------------------------------------------
+-- ALERTAS DE DEMONSTRAÇÃO
+--
+-- Gerados a partir das leituras acima que efectivamente violam as regras
+-- definidas — não são valores inventados. Regista-se no máximo um alerta por
+-- sensor, regra e dia, replicando o comportamento do motor de alertas
+-- (alertService), que evita duplicar alertas por resolver.
+--
+-- Os alertas com mais de dois dias aparecem como resolvidos; os restantes
+-- ficam activos, para que o dashboard e a página de alertas tenham conteúdo.
+-- ------------------------------------------------------------
+INSERT INTO alert (sensor_id, rule_id, message, value, severity, resolved, resolved_at, created_at)
+SELECT DISTINCT ON (r.sensor_id, ru.id, date_trunc('day', r.time))
+  r.sensor_id,
+  ru.id,
+  ru.name || ': valor ' || r.value || ' ' || ru.condition || ' ' || ru.threshold,
+  r.value,
+  ru.severity,
+  (r.time < NOW() - INTERVAL '2 days'),
+  CASE WHEN r.time < NOW() - INTERVAL '2 days' THEN r.time + INTERVAL '3 hours' END,
+  r.time
+FROM sensor_reading r
+JOIN sensor s  ON s.id = r.sensor_id
+JOIN rule   ru ON ru.sensor_type = s.type AND ru.active
+WHERE ((ru.condition = '>' AND r.value > ru.threshold)
+    OR (ru.condition = '<' AND r.value < ru.threshold))
+  AND NOT EXISTS (SELECT 1 FROM alert a)
+ORDER BY r.sensor_id, ru.id, date_trunc('day', r.time), r.time DESC;
+
+-- ------------------------------------------------------------
+-- CUSTOS OPERACIONAIS DE DEMONSTRAÇÃO
+-- Três meses de custos por categoria, para o resumo mensal do dashboard
+-- de custos ter conteúdo.
+-- ------------------------------------------------------------
+INSERT INTO cost_record (plot_id, category, description, amount, date)
+SELECT p.id, v.category, v.description, v.amount,
+       (date_trunc('month', CURRENT_DATE) - (v.months_ago || ' months')::INTERVAL + (v.day || ' days')::INTERVAL)::date
+FROM plot p, (VALUES
+  ('water',         'Consumo de água - rega gotejamento', 340.50, 2, 4),
+  ('energy',        'Electricidade da bomba',             182.30, 2, 9),
+  ('maintenance',   'Substituição de gotejadores',         95.00, 2, 18),
+  ('water',         'Consumo de água - rega gotejamento', 402.75, 1, 3),
+  ('energy',        'Electricidade da bomba',             210.40, 1, 11),
+  ('fertilization', 'Fertilizante foliar',                156.80, 1, 20),
+  ('water',         'Consumo de água - rega gotejamento', 388.20, 0, 5),
+  ('energy',        'Electricidade da bomba',             198.60, 0, 12),
+  ('maintenance',   'Manutenção do sistema de filtragem',  74.90, 0, 15)
+) AS v(category, description, amount, months_ago, day)
+WHERE p.name = 'Talhão 1'
+  AND NOT EXISTS (SELECT 1 FROM cost_record c);

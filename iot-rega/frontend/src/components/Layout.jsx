@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useFarm } from '../context/FarmContext';
 
@@ -11,15 +12,23 @@ const NAV_ITEMS = [
   { to: '/rules', label: 'Regras' },
   { to: '/costs', label: 'Custos' },
   { to: '/weather', label: 'Clima' },
+  { to: '/profile', label: 'Perfil' },
 ];
 
 export default function Layout() {
   const { user, logout } = useAuth();
   const { farms, farmId, setFarmId } = useFarm();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const location = useLocation();
+
+  // Fecha o menu lateral ao mudar de página (relevante em ecrãs pequenos)
+  useEffect(() => setMenuOpen(false), [location.pathname]);
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      {menuOpen && <div className="sidebar-backdrop" onClick={() => setMenuOpen(false)} />}
+
+      <aside className={'sidebar' + (menuOpen ? ' open' : '')}>
         <div className="brand">🌿 IoT Rega</div>
         <nav>
           {NAV_ITEMS.map((item) => (
@@ -37,6 +46,15 @@ export default function Layout() {
 
       <div className="main-area">
         <header className="topbar">
+          <button
+            className="menu-toggle"
+            onClick={() => setMenuOpen((v) => !v)}
+            aria-label="Alternar menu de navegação"
+            aria-expanded={menuOpen}
+          >
+            ☰
+          </button>
+
           <select
             className="farm-select"
             value={farmId}
@@ -49,7 +67,7 @@ export default function Layout() {
           </select>
 
           <div className="user-box">
-            <span>{user?.name}</span>
+            <Link to="/profile" className="user-name">{user?.name}</Link>
             <button className="btn-ghost" onClick={logout}>Sair</button>
           </div>
         </header>

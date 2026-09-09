@@ -43,6 +43,10 @@ export default function Login() {
         </button>
 
         <p className="auth-switch">
+          <Link to="/forgot-password">Esqueceste-te da password?</Link>
+        </p>
+
+        <p className="auth-switch">
           Ainda não tens conta? <Link to="/register">Regista-te</Link>
         </p>
       </form>

@@ -93,4 +93,4 @@ const evaluateCondition = (value, condition, threshold) => {
   }
 };
 
-module.exports = { evaluateSensor, evaluateAllRules };
+module.exports = { evaluateSensor, evaluateAllRules, evaluateCondition };
